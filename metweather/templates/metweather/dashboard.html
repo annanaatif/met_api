@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Climate Data Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
+    label { display: block; font-size: 12px; color: #444; margin-bottom: 4px; }
+    select, input { padding: 8px; min-width: 140px; }
+    button { padding: 10px 14px; cursor: pointer; }
+    .card { padding: 16px; border: 1px solid #eee; border-radius: 12px; box-shadow: 0 1px 8px rgba(0,0,0,0.05); }
+    canvas { max-width: 100%; }
+    table { border-collapse: collapse; margin-top: 20px; width: 100%; font-size: 14px; }
+    th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: center; }
+    th { background: #f5f5f5; }
+    .muted { color: #666; font-size: 12px; margin-top: 6px; }
+    #downloadCsv { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Climate Data Dashboard</h2>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="region">Region</label>
+        <select id="region">
+          {% for r in regions %}
+            <option value="{{ r.code }}">{{ r.code }} — {{ r.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="parameter">Parameter</label>
+        <select id="parameter">
+          {% for p in parameters %}
+            <option value="{{ p }}">{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div>
+        <label for="month">Month (optional)</label>
+        <select id="month">
+          <option value="">All</option>
+          <option>Jan</option><option>Feb</option><option>Mar</option>
+          <option>Apr</option><option>May</option><option>Jun</option>
+          <option>Jul</option><option>Aug</option><option>Sep</option>
+          <option>Oct</option><option>Nov</option><option>Dec</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="start_year">Start Year (optional)</label>
+        <input type="number" id="start_year" placeholder="e.g. 1950">
+      </div>
+
+      <div>
+        <label for="end_year">End Year (optional)</label>
+        <input type="number" id="end_year" placeholder="e.g. 2020">
+      </div>
+
+      <div>
+        <button id="load">Load Data</button>
+      </div>
+    </div>
+
+    <div class="muted">Select region, parameter, and optionally filter by month/year range.</div>
+
+    <div style="margin-top:16px">
+      <button id="downloadCsv">Download CSV</button>
+      <canvas id="chart" height="90"></canvas>
+    </div>
+
+    <!-- Table for raw values -->
+    <div id="data-table"></div>
+  </div>
+
+  <script>
+    let chart;
+    let latestData = []; // store table data for CSV export
+    const MONTHS_DISPLAY = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const MONTHS_UPPER   = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+
+    function buildUrl() {
+      const region = document.getElementById('region').value;
+      const parameter = document.getElementById('parameter').value;
+      return `/api/monthly-pack/${encodeURIComponent(region)}/${encodeURIComponent(parameter)}/`;
+    }
+
+    function normalizeRow(row) {
+      const norm = {};
+      if (!row) return norm;
+      for (const [k, v] of Object.entries(row)) {
+        const key = k.slice(0,3).toUpperCase();
+        norm[key] = v;
+      }
+      return norm;
+    }
+
+    async function loadChart() {
+      const url = buildUrl();
+      const res = await fetch(url);
+      const payload = await res.json();
+      const data = payload.data || {};
+
+      const chosenMonth = document.getElementById('month').value;
+      const start = parseInt(document.getElementById('start_year').value);
+      const end   = parseInt(document.getElementById('end_year').value);
+
+      let years = Object.keys(data).sort((a,b)=>parseInt(a)-parseInt(b));
+      years = years.filter(y => {
+        const yy = parseInt(y);
+        const okStart = Number.isNaN(start) ? true : yy >= start;
+        const okEnd   = Number.isNaN(end)   ? true : yy <= end;
+        return okStart && okEnd;
+      });
+
+      if (years.length === 0) {
+        if(chart) chart.destroy();
+        document.getElementById("data-table").innerHTML = "<p>No data in the selected range.</p>";
+        return;
+      }
+
+      const normalized = {};
+      for(const y of years) normalized[y] = normalizeRow(data[y]);
+
+      let datasets = [];
+      if(chosenMonth) {
+        const mUpper = chosenMonth.slice(0,3).toUpperCase();
+        const values = years.map(y => normalized[y][mUpper] ?? null);
+        datasets = [{label: chosenMonth, data: values, tension:0.2, spanGaps:true}];
+      } else {
+        datasets = MONTHS_UPPER.map((mUpper, idx)=>{
+          const values = years.map(y=>normalized[y][mUpper] ?? null);
+          return { label: MONTHS_DISPLAY[idx], data: values, tension:0.2, spanGaps:true };
+        });
+      }
+
+      const ctx = document.getElementById('chart').getContext('2d');
+      if(chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: years, datasets },
+        options: {
+          responsive:true,
+          interaction:{mode:'index', intersect:false},
+          scales:{ x:{title:{display:true,text:'Year'}}, y:{title:{display:true,text:'Value'}}},
+          plugins:{legend:{position:'bottom'}}
+        }
+      });
+
+      // Build table & store for CSV
+      const headerMonths = chosenMonth ? [chosenMonth] : MONTHS_DISPLAY;
+      const headerToUpper = headerMonths.map(m => m.slice(0,3).toUpperCase());
+      let html = "<table><thead><tr><th>Year</th>";
+      headerMonths.forEach(m=>html+=`<th>${m}</th>`);
+      html+="</tr></thead><tbody>";
+
+      latestData = [];
+      years.forEach(y=>{
+        const rowArr = [y];
+        html+=`<tr><td>${y}</td>`;
+        headerToUpper.forEach(mUpper=>{
+          const v = normalized[y][mUpper] ?? "-";
+          rowArr.push(v);
+          html+=`<td>${v}</td>`;
+        });
+        html+="</tr>";
+        latestData.push(rowArr);
+      });
+      html+="</tbody></table>";
+      document.getElementById("data-table").innerHTML = html;
+    }
+
+    function downloadCSV() {
+      if(latestData.length === 0) return alert("No data to download.");
+      const header = ["Year"];
+      const chosenMonth = document.getElementById('month').value;
+      const headerMonths = chosenMonth ? [chosenMonth] : MONTHS_DISPLAY;
+      header.push(...headerMonths);
+      const csvRows = [header.join(",")];
+      latestData.forEach(row=> csvRows.push(row.join(",")));
+      const csvContent = csvRows.join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `climate_data_${new Date().toISOString().slice(0,10)}.csv`;
+      link.click();
+    }
+
+    document.getElementById('load').addEventListener('click', loadChart);
+    document.getElementById('downloadCsv').addEventListener('click', downloadCSV);
+  </script>
+</body>
+</html>
