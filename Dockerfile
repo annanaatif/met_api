@@ -18,7 +18,7 @@ CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 #     create docker-compose.yml file in the root directory
 #     then run the command docker-compose up --build
 #     then run the command docker-compose up -d
-#     then run the command docker-compose exec web python manage.py fetch_met
 #     then run the command docker-compose exec web python manage.py migrate
-#     then run the command docker-compose exec web
+#     then run the command docker-compose exec web python manage.py fetch_met
+#     then run the command docker-compose exec web python manage.py runserver
 #     then run the command docker-compose down
